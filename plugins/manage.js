@@ -47,7 +47,7 @@ const config = require("../config");
 const { settingsMenu, ADMIN_ACCESS } = config;
 const fs = require("fs");
 const { BotVariable } = require("../core/database");
-const { getNumericId } = require("./utils/lid-helper");
+
 var handler = config.HANDLERS !== "false" ? config.HANDLERS.split("")[0] : "";
 
 async function setVar(key, value, message = false) {
@@ -87,6 +87,12 @@ Module(
 
     const [key, ...valueParts] = input.split("=");
     const value = valueParts.join("=").trim();
+
+    if (key.trim().toUpperCase() === "SUDO") {
+      return await message.sendReply(
+        "_Setting SUDO via setvar is deprecated!_\n\n_Use `.setsudo` command instead to properly manage sudo users with LID support._"
+      );
+    }
 
     try {
       await setVar(key.trim(), value, message);
@@ -169,7 +175,6 @@ Module(
     const trimmedKey = key.trim();
 
     try {
-
       if (!fs.existsSync("./config.env")) {
         return await message.sendReply(
           "_Setting env variables unsupported on containers. Use setvar or set from platform settings._"
@@ -277,14 +282,14 @@ Module(
         selectedOption <= configs.length
       ) {
         const setting = configs[selectedOption - 1];
-        let msg = `*${setting.title}*\n\n1. ON\n2. OFF`;
+        let msg = `_*${setting.title}*_\n\n1. ON\n2. OFF`;
         return await message.sendReply(msg);
       }
     }
     let msg =
-      "*Settings configuration menu*\n\nSelect an option by number:\n\n";
+      "*_Settings configuration menu_*\n\n_Select an option by number:_\n\n";
     configs.forEach((e, index) => {
-      msg += `${index + 1}. ${e.title}\n`;
+      msg += `_${index + 1}. ${e.title}_\n`;
     });
     return await message.sendReply(msg);
   }
@@ -319,22 +324,47 @@ Module(
     use: "settings",
   },
   async (message, match) => {
-    let target = match[1]?.toLowerCase();
-    if (target == "chat" || target == "sudo") {
-      await setVar("ANTI_DELETE", match[1]);
-      return await message.sendReply(
-        `_Anti-delete activated ✅_\n\n_Recovered messages will be sent to the ${
-          target == "chat" ? "original chat" : "first sudo"
-        }_`
-      );
-    } else if (target == "off") {
-      await setVar("ANTI_DELETE", "off");
-      return await message.sendReply(`_Anti-delete deactivated ❌_`);
-    } else {
+    let target = match[1]?.trim();
+    if (!target) {
       return await message.sendReply(
         `_*Anti delete*_\n\n_Recovers deleted messages and sends automatically_\n\n_Current status: ${
           config.ANTI_DELETE || "off"
-        }_\n\n_Use \`.antidelete chat|sudo|off\`_\n\n- "chat" - sends to original chat\n- "sudo" - sends to first sudo\n- "off" - disables anti-delete_`
+        }_\n\n_Usage:_\n\`.antidelete chat\` - _sends to original chat_\n\`.antidelete sudo\` - _sends to first sudo_\n\`.antidelete <jid>\` - _sends to custom JID_\n\`.antidelete off\` - _disables anti-delete_`
+      );
+    }
+
+    target = target.toLowerCase();
+
+    if (target === "off") {
+      await setVar("ANTI_DELETE", "off");
+      await setVar("ANTI_DELETE_JID", "");
+      return await message.sendReply(`_Anti-delete deactivated ❌_`);
+    } else if (target === "chat") {
+      await setVar("ANTI_DELETE", "chat");
+      await setVar("ANTI_DELETE_JID", "");
+      return await message.sendReply(
+        `_Anti-delete activated ✅_\n\n_Recovered messages will be sent to the original chat_`
+      );
+    } else if (target === "sudo") {
+      await setVar("ANTI_DELETE", "sudo");
+      await setVar("ANTI_DELETE_JID", "");
+      return await message.sendReply(
+        `_Anti-delete activated ✅_\n\n_Recovered messages will be sent to the first sudo_`
+      );
+    } else if (target.includes("@")) {
+      if (!target.match(/^\d+@(s\.whatsapp\.net|g\.us)$/)) {
+        return await message.sendReply(
+          `_Invalid JID format!_\n\n_Accepted formats:_\n- \`123020340234@s.whatsapp.net\` (personal)\n- \`123020340234@g.us\` (group)_`
+        );
+      }
+      await setVar("ANTI_DELETE", "custom");
+      await setVar("ANTI_DELETE_JID", target);
+      return await message.sendReply(
+        `_Anti-delete activated ✅_\n\n_Recovered messages will be sent to: ${target}_`
+      );
+    } else {
+      return await message.sendReply(
+        `_Invalid option!_\n\n_Usage:_\n\`.antidelete chat\` - _sends to original chat_\n\`.antidelete sudo\` - _sends to first sudo_\n\`.antidelete <jid>\` - _sends to custom JID_\n\`.antidelete off\` - _disables anti-delete_`
       );
     }
   }
@@ -348,34 +378,56 @@ Module(
   },
   async (message, mm) => {
     var m = message;
-    var newSudo = (
-      m.reply_message ? m.reply_message?.jid : "" || m.mention?.[0] || mm[1]
-    ).split("@")[0];
-    if (!newSudo) return await m.sendReply("_Need reply/mention/number_");
-    const oldSudo = config.SUDO?.split(",");
-    var newSudo = (
-      m.reply_message ? m.reply_message?.jid : "" || m.mention?.[0] || mm[1]
-    ).split("@")[0];
-    if (!newSudo) return await m.sendReply("_Need reply/mention/number_");
-    newSudo = newSudo.replace(/[^0-9]/g, "");
-    if (!oldSudo.includes(newSudo)) {
-      oldSudo.push(newSudo);
-      var setSudo = oldSudo;
-      setSudo = setSudo
-        .map((x) => {
-          if (typeof x === "number") {
-            return x.toString();
-          } else {
-            return x.replace(/[^0-9]/g, "");
-          }
-        })
-        .filter((x) => x)
-        .join(",");
-      await m.sendMessage("_Added @" + newSudo + " as sudo_", "text", {
-        mentions: [newSudo + "@s.whatsapp.net"],
+    let targetLid;
+
+    // determine target based on context
+    if (m.isGroup) {
+      // in groups: check mention first, then reply
+      if (m.mention && m.mention.length > 0) {
+        targetLid = m.mention[0];
+      } else if (m.reply_message) {
+        targetLid = m.reply_message.jid;
+      } else {
+        return await m.sendReply("_Need reply or mention in groups_");
+      }
+    } else {
+      // in DM: use sender
+      targetLid = m.sender;
+    }
+
+    if (!targetLid) return await m.sendReply("_Could not determine target_");
+
+    try {
+      // get current SUDO_MAP
+      let sudoMap = [];
+      if (config.SUDO_MAP) {
+        try {
+          sudoMap = JSON.parse(config.SUDO_MAP);
+          if (!Array.isArray(sudoMap)) sudoMap = [];
+        } catch (e) {
+          sudoMap = [];
+        }
+      }
+
+      // check if already sudo
+      if (sudoMap.includes(targetLid)) {
+        return await m.sendReply("_User is already a sudo_");
+      }
+
+      // add to sudo map
+      sudoMap.push(targetLid);
+      await setVar("SUDO_MAP", JSON.stringify(sudoMap));
+
+      // format for display
+      const displayId = targetLid.split("@")[0];
+
+      await m.sendMessage(`_Added @${displayId} as sudo_`, "text", {
+        mentions: [targetLid],
       });
-      await setVar("SUDO", setSudo);
-    } else return await m.sendReply("_User is already a sudo_");
+    } catch (error) {
+      console.error("setsudo error:", error);
+      await m.sendReply(`_Error setting sudo: ${error.message}_`);
+    }
   }
 );
 
@@ -386,7 +438,30 @@ Module(
     use: "owner",
   },
   async (message, match) => {
-    return await message.sendReply(config.SUDO);
+    let sudoMap = [];
+    if (config.SUDO_MAP) {
+      try {
+        sudoMap = JSON.parse(config.SUDO_MAP);
+        if (!Array.isArray(sudoMap)) sudoMap = [];
+      } catch (e) {
+        sudoMap = [];
+      }
+    }
+
+    if (sudoMap.length === 0) {
+      return await message.sendReply("_No sudo users configured_");
+    }
+
+    const sudoList = sudoMap
+      .map((lid, index) => {
+        const displayId = lid.split("@")[0];
+        return `${index + 1}. @${displayId}`;
+      })
+      .join("\n");
+
+    await message.sendMessage(`*Sudo Users:*\n\n${sudoList}`, "text", {
+      mentions: sudoMap,
+    });
   }
 );
 
@@ -397,22 +472,56 @@ Module(
     desc: "Deletes sudo",
   },
   async (m, mm) => {
-    const oldSudo = config.SUDO?.split(",");
-    var newSudo = (
-      m.reply_message ? m.reply_message?.jid : "" || m.mention?.[0] || mm[1]
-    ).split("@")[0];
-    if (!newSudo) return await m.sendReply("*Need reply/mention/number*");
-    if (oldSudo.includes(newSudo)) {
-      oldSudo.push(newSudo);
-      var setSudo = oldSudo;
-      setSudo = setSudo
-        .filter((x) => x !== newSudo.replace(/[^0-9]/g, ""))
-        .join(",");
-      await m.sendMessage("_Removed @" + newSudo + " from sudo!_", "text", {
-        mentions: [newSudo + "@s.whatsapp.net"],
+    let targetLid;
+
+    // determine target based on context
+    if (m.isGroup) {
+      // in groups: check mention first, then reply
+      if (m.mention && m.mention.length > 0) {
+        targetLid = m.mention[0];
+      } else if (m.reply_message) {
+        targetLid = m.reply_message.jid;
+      } else {
+        return await m.sendReply("_Need reply or mention in groups_");
+      }
+    } else {
+      // in DM: use sender
+      targetLid = m.sender;
+    }
+
+    if (!targetLid) return await m.sendReply("_Could not determine target_");
+
+    try {
+      // get current SUDO_MAP
+      let sudoMap = [];
+      if (config.SUDO_MAP) {
+        try {
+          sudoMap = JSON.parse(config.SUDO_MAP);
+          if (!Array.isArray(sudoMap)) sudoMap = [];
+        } catch (e) {
+          sudoMap = [];
+        }
+      }
+
+      // check if user is sudo
+      if (!sudoMap.includes(targetLid)) {
+        return await m.sendReply("_User is not a sudo_");
+      }
+
+      // remove from sudo map
+      sudoMap = sudoMap.filter((lid) => lid !== targetLid);
+      await setVar("SUDO_MAP", JSON.stringify(sudoMap));
+
+      // format for display
+      const displayId = targetLid.split("@")[0];
+
+      await m.sendMessage(`_Removed @${displayId} from sudo!_`, "text", {
+        mentions: [targetLid],
       });
-      await setVar("SUDO", setSudo, m);
-    } else return await m.sendReply("_User is already not a sudo_");
+    } catch (error) {
+      console.error("delsudo error:", error);
+      await m.sendReply(`_Error removing sudo: ${error.message}_`);
+    }
   }
 );
 
@@ -1076,7 +1185,6 @@ Module(
 
       case "allow":
         if (!rest) {
-
           if (!message.jid.includes("@g.us")) {
             const chatNumber = message.jid.split("@")[0];
             const myNumber = message.client.user.id.split(":")[0];
@@ -1139,7 +1247,6 @@ Module(
 
       case "remove":
         if (!rest) {
-
           if (!message.jid.includes("@g.us")) {
             const chatNumber = message.jid.split("@")[0];
             let allowedNumbers = config.ALLOWED_CALLS
@@ -1291,7 +1398,7 @@ Module(
       const optionNumber = parseInt(sMatch[0]);
       if (optionNumber > 0 && optionNumber <= configs.length) {
         const setting = configs[optionNumber - 1];
-        let msg = `*${setting.title}*\n\n1. ON\n2. OFF`;
+        let msg = `*_${setting.title}_*\n1. ON\n2. OFF`;
         return await message.sendReply(msg);
       }
     } else if (
@@ -1354,9 +1461,7 @@ Module(
         }
 
         if (linkBlocked && !(await isAdmin(message, message.sender))) {
-          const usr = message.sender.includes(":")
-            ? message.sender.split(":")[0] + "@s.whatsapp.net"
-            : message.sender;
+          const usr = message.sender;
 
           await message.client.sendMessage(message.jid, {
             delete: message.data.key,
@@ -1372,7 +1477,7 @@ Module(
           } else if (antilinkConf.mode === "warn") {
             const { WARN } = require("../config");
             const warnLimit = parseInt(WARN || 4);
-            const targetNumericId = getNumericId(usr);
+            const targetNumericId = usr?.split("@")[0];
 
             try {
               await setWarn(

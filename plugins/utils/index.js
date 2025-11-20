@@ -32,12 +32,12 @@ const {
   circle,
   blur,
   attp,
-  aadhar,
   sticker,
   rotate,
   avMix,
   webp2mp4,
-  addID3
+  addID3,
+  trim,
 } = mediaProcessing;
 
 // Utility functions
@@ -53,7 +53,7 @@ const {
   findMusic,
   searchYT,
   downloadGram,
-  pin,
+  pinterestDl,
   fb,
   igStalk,
   tiktok,
@@ -61,7 +61,8 @@ const {
   getThumb,
   gtts,
   getBuffer,
-  lyrics
+  lyrics,
+  pinterestSearch,
 } = utils;
 
 // Language functions
@@ -69,12 +70,12 @@ const { malayalamToManglish, manglishToMalayalam } = language;
 
 const aiTTS = require("./ai-tts");
 
-const { gis, pinSearch } = require("./gis");
+const { gis } = require("./gis");
 
 const { uploadToImgbb, uploadToCatbox } = require("./upload");
 
 const linkDetector = require("./link-detector");
- 
+
 const fancy = require("./fancy");
 
 module.exports = {
@@ -104,12 +105,12 @@ module.exports = {
   circle,
   blur,
   attp,
-  aadhar,
   sticker,
   rotate,
   avMix,
   webp2mp4,
   addID3,
+  trim,
 
   // Utilities
   parseUptime,
@@ -124,7 +125,7 @@ module.exports = {
   findMusic,
   searchYT,
   downloadGram,
-  pin,
+  pinterestDl,
   fb,
   igStalk,
   tiktok,
@@ -132,6 +133,7 @@ module.exports = {
   getThumb,
   gtts,
   getBuffer,
+  pinterestSearch,
 
   // Language
   malayalamToManglish,
@@ -139,7 +141,6 @@ module.exports = {
 
   // GIS
   gis,
-  pinSearch,
 
   // File Upload
   uploadToImgbb,

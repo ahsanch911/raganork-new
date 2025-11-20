@@ -24,21 +24,8 @@ const Base = require("./base");
 let config = require("../../config");
 const ReplyMessage = require("./reply-message");
 const fs = require("fs");
-const {
-  isLid,
-  isJid,
-  getBotId,
-  getBotJid,
-  getBotLid,
-  getBotNumericId,
-  getNumericId,
-  isSudo,
-  isFromOwner,
-  isPrivateMessage,
-  isLidParticipant,
-} = require("../../plugins/utils/lid-helper");
-
 const { genThumb } = require("../helpers");
+const { getTempPath } = require("../helpers");
 
 class Message extends Base {
   constructor(client, data) {
@@ -50,15 +37,41 @@ class Message extends Base {
     this.jid = data.key.remoteJid;
     this.isGroup = data.key.remoteJid.endsWith("@g.us");
     this.fromMe = data.key.fromMe;
-    this.isLid = this.isGroup && isLid(data.key.participant);
-    this.sender = this.isGroup ? data.key.participant : data.key.remoteJid;
-    this.fromOwner = isFromOwner(data, this.client, config.SUDO);
+    this.fromBot = data.key.id?.startsWith("3EB0");
+
+    if (this.isGroup) {
+      this.sender = data.key.participant || data.key.participantAlt;
+    } else {
+      this.sender = data.key.remoteJid.endsWith("lid")
+        ? data.key.remoteJid
+        : data.key.remoteJidAlt;
+    }
+
+    const botNumeric = this.client.user?.lid?.split(":")[0] + "@lid";
+    const senderNumeric = this.sender?.split("@")[0];
+
+    // check if sender is sudo using SUDO_MAP
+    let isSudoUser = false;
+    if (config.SUDO_MAP) {
+      try {
+        const sudoMap = JSON.parse(config.SUDO_MAP);
+        if (Array.isArray(sudoMap)) {
+          isSudoUser = sudoMap.includes(this.sender);
+        }
+      } catch (e) {
+        isSudoUser = false;
+      }
+    }
+
+    this.fromOwner =
+      data.key.fromMe || senderNumeric === botNumeric || isSudoUser;
+
     this.senderName = data.pushName;
-    this.myjid = getBotNumericId(data, this.client);
+    this.myjid = botNumeric;
     this.message =
-      (data.message?.extendedTextMessage === null
-        ? data.message?.conversation
-        : data.message?.extendedTextMessage?.text) || "";
+      data.message?.extendedTextMessage?.text ??
+      data.message?.conversation ??
+      "";
     this.text = this.message;
     this.timestamp = data.messageTimestamp;
     this.data = data;
@@ -75,14 +88,16 @@ class Message extends Base {
     if (contextInfo?.quotedMessage) {
       contextInfo.remoteJid = contextInfo.remoteJid || this.jid;
       this.reply_message = new ReplyMessage(this.client, contextInfo);
+
+      const quotedParticipantJid = contextInfo.participant;
       this.quoted = {
         key: {
           remoteJid: contextInfo.remoteJid,
           fromMe:
-            contextInfo.participant === getBotJid(this.client) ||
-            contextInfo.participant === getBotLid(this.client),
+            quotedParticipantJid?.split("@")[0] ===
+            this.client.user?.id?.split(":")[0],
           id: this.reply_message.id,
-          participant: contextInfo.participant,
+          participant: quotedParticipantJid,
         },
         message: this.reply_message.data.message,
       };
@@ -94,9 +109,9 @@ class Message extends Base {
       ).id;
       this.isOwnResponse =
         data.message.interactiveResponseMessage?.contextInfo?.participant &&
-        getNumericId(
-          data.message.interactiveResponseMessage.contextInfo.participant
-        ) === this.myjid;
+        data.message.interactiveResponseMessage.contextInfo.participant.split(
+          "@"
+        )[0] === this.myjid;
     } else {
       this.list = null;
     }
@@ -144,6 +159,13 @@ class Message extends Base {
       };
     }
     return null;
+  }
+
+  async react(emoji, key = this.data.key) {
+    if (!emoji) throw new Error("Emoji is required for reaction.");
+    return await this.client.sendMessage(key.remoteJid, {
+      react: { text: emoji, key },
+    });
   }
 
   async sendMessage(content, type = "text", options = {}) {
@@ -234,7 +256,7 @@ class Message extends Base {
 
       return await this.client.sendMessage(
         this.jid,
-        { audio: content, mimetype: "audio/ogg", ...messageOptions },
+        { audio: content, mimetype: "audio/mp4", ...messageOptions },
         realOptions
       );
     }
@@ -270,15 +292,26 @@ class Message extends Base {
       this.data.message = JSON.parse(
         JSON.stringify(this.data.message).replace("ptvMessage", "videoMessage")
       );
-    const buffer = await downloadMediaMessage(this.data, "buffer");
-    if (type === "buffer") return buffer;
-    var filename =
-      "./temp/temp." +
+
+    const ext =
       this.data.message[Object.keys(this.data.message)[0]].mimetype?.split(
         "/"
       )[1];
-    await fs.writeFileSync(filename, buffer);
-    return filename;
+    const filename = getTempPath(`temp.${ext}`);
+
+    if (type === "buffer") {
+      const buffer = await downloadMediaMessage(this.data, "buffer");
+      return buffer;
+    } else {
+      const stream = await downloadMediaMessage(this.data, "stream");
+      const writeStream = fs.createWriteStream(filename);
+      stream.pipe(writeStream);
+      await new Promise((resolve, reject) => {
+        writeStream.on("finish", resolve);
+        writeStream.on("error", reject);
+      });
+      return filename;
+    }
   }
 
   async sendReply(content, type = "text", options = {}) {
@@ -380,22 +413,12 @@ class Message extends Base {
       );
     }
   }
-  async edit(text = "", _jid = false, _key = false) {
-    return await this.client.relayMessage(
-      _jid || this.jid,
-      {
-        protocolMessage: {
-          key: _key,
-          type: 14,
-          editedMessage: {
-            conversation: text,
-          },
-        },
-      },
-      {}
-    );
+  async edit(text = "", _jid = this.jid, _key = false) {
+    return await this.client.sendMessage(_jid, {
+      text,
+      edit: _key,
+    });
   }
-
   async getThumb(url) {
     return await genThumb(url);
   }
